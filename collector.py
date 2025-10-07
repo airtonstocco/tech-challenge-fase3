@@ -136,3 +136,39 @@ def invocar_lambda():
         print(f"Função Lambda invocada com sucesso: {response['StatusCode']}")
     except Exception as e:
         print(f"Erro ao invocar Lambda: {e}")
+
+def coletar_dados_hoje():
+    resultados = []
+    hoje = datetime.now(timezone.utc).date()
+    hoje_str = hoje.strftime("%Y-%m-%d")
+
+    for ticker in tickers_b3:
+        try:
+            print(f"Coletando dados de hoje para {ticker} ({hoje_str})...")
+
+            # Baixa dados do dia atual
+            dados = yf.download(
+                ticker,
+                start=hoje_str,
+                end=hoje_str,
+                auto_adjust=True,
+                interval="1d"
+            )
+
+            if dados.empty:
+                print(f"Sem dados para {ticker} hoje.")
+                continue
+
+            dados = dados.reset_index()
+            dados.rename(columns={"Date": "date"}, inplace=True)
+            dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
+            dados["ticker"] = ticker
+
+            # Transforma em dicionários para retorno JSON-friendly
+            registros = dados.to_dict(orient="records")
+            resultados.extend(registros)
+
+        except Exception as e:
+            print(f"Erro ao coletar {ticker}: {e}")
+
+    return resultados
