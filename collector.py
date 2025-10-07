@@ -6,11 +6,23 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timezone, timedelta
 import time
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytz
 
 load_dotenv()
 
+TZ_BR = pytz.timezone("America/Sao_Paulo")
+
 s3 = boto3.client(
     "s3",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_DEFAULT_REGION")
+)
+
+lambda_client = boto3.client(
+    "lambda",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
     region_name=os.getenv("AWS_DEFAULT_REGION")
@@ -69,28 +81,33 @@ def coletar_e_enviar_para_s3():
             start_date = obter_ultima_data_ingestao_por_ticker(BUCKET_NAME, ticker)
 
             if not start_date:
-                print(f"📌 {ticker} será coletado pela primeira vez (desde 2022-01-01).")
+                print(f"{ticker} será coletado pela primeira vez (desde 2022-01-01).")
                 start_date = "2022-01-01"
 
             if start_date >= end_date_str:
                 resultados.append({ticker: "Sem novos dados"})
                 continue
 
-            print(f"⏳ Baixando {ticker} de {start_date} até {end_date_str}...")
+            print(f"Baixando {ticker} de {start_date} até {end_date_str}...")
 
             dados = yf.download(ticker, start=start_date, end=end_date_str, auto_adjust=True)
+            dados = dados.reset_index()
+            dados.rename(columns={"Date": "trading_date"}, inplace=True)
+            dados["trading_date"] = dados["trading_date"].dt.strftime("%Y-%m-%d")
+            dados["ingestion_date"] = datetime.now(TZ_BR).strftime("%Y-%m-%d %H:%M:%S")
+            dados["ticker"] = ticker
 
             if dados.empty:
                 resultados.append({ticker: "Sem dados"})
                 continue
 
-            dados["ingestion_date"] = datetime.now(timezone.utc)
-
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
+            table = pa.Table.from_pandas(dados, preserve_index=False)
             buffer = BytesIO()
-            dados.to_parquet(buffer, index=True, engine="pyarrow", coerce_timestamps="us", allow_truncated_timestamps=True)
+            pq.write_table(table, buffer, coerce_timestamps="us", use_deprecated_int96_timestamps=False)
 
-            ingestion_date = datetime.now().strftime("%Y-%m-%d")
-            filename = f"raw/ingestion_date={ingestion_date}/{ticker}_{datetime.now().strftime('%H-%M-%S')}.parquet"
+            ingestion_date = datetime.now(TZ_BR).strftime("%Y-%m-%d")
+            filename = f"raw/ingestion_date={ingestion_date}/{ticker}_{datetime.now(TZ_BR).strftime('%H-%M-%S')}.parquet"
 
             s3.put_object(
                 Bucket=BUCKET_NAME,
@@ -98,13 +115,93 @@ def coletar_e_enviar_para_s3():
                 Body=buffer.getvalue()
             )
 
-            print(f"✅ {ticker} enviado com ingestion_date={ingestion_date}")
+            print(f"{ticker} enviado com ingestion_date={ingestion_date}")
             resultados.append({ticker: "Enviado"})
 
             time.sleep(1)
 
         except Exception as e:
-            print(f"❌ Erro em {ticker}: {e}")
+            print(f"Erro em {ticker}: {e}")
             resultados.append({ticker: f"Erro: {str(e)}"})
+
+    # Após o loop de coleta de dados, invoca a função Lambda
+    invocar_lambda()
+
+    return resultados
+
+def invocar_lambda():
+    try:
+        response = lambda_client.invoke(
+            FunctionName='fase-3-glue-job',  # Substitua pelo nome da sua função Lambda
+            InvocationType='Event',  # 'Event' para execução assíncrona
+            Payload='{"message": "Coleta de dados B3 finalizada."}'
+        )
+        print(f"Função Lambda invocada com sucesso: {response['StatusCode']}")
+    except Exception as e:
+        print(f"Erro ao invocar Lambda: {e}")
+
+def coletar_dados_hoje():
+    resultados = []
+    hoje_br = datetime.now(TZ_BR).date()
+    hoje_str = hoje_br.strftime("%Y-%m-%d")
+
+    for ticker in tickers_b3:
+        try:
+            print(f"Coletando dados de hoje ({hoje_str}) para {ticker}...")
+
+            # Usa period em vez de start/end — mais confiável para intraday
+            dados = yf.download(
+                ticker,
+                period="1d",
+                interval="30m",
+                auto_adjust=True,
+                progress=False
+            )
+
+            # Se não vier nada, tenta últimos 5 dias (fallback)
+            if dados.empty:
+                print(f"Nenhum dado retornado para {ticker}, tentando últimos 5 dias...")
+                dados = yf.download(
+                    ticker,
+                    period="5d",
+                    interval="30m",
+                    auto_adjust=True,
+                    progress=False
+                )
+
+            if dados.empty:
+                print(f"Sem dados para {ticker} nem nos últimos 5 dias.")
+                continue
+
+            # Ajusta timezone (Yahoo costuma retornar UTC)
+            idx = dados.index
+            if idx.tz is None:
+                idx = idx.tz_localize("UTC")
+            dados.index = idx.tz_convert(TZ_BR)
+
+            # Filtra apenas o dia de hoje no fuso horário da B3
+            dados = dados[dados.index.date == hoje_br]
+
+            if dados.empty:
+                print(f"{ticker}: sem candles para {hoje_str} (fora do horário de pregão?).")
+                continue
+
+            # Corrige colunas caso venham como MultiIndex
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
+
+            # Prepara DataFrame para saída
+            dados = dados.reset_index().rename(columns={"Datetime": "datetime"})
+            dados["datetime"] = dados["datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            dados["ticker"] = ticker
+            dados["trading_date"] = hoje_str
+
+            # Converte para dicionários serializáveis
+            registros = dados.to_dict(orient="records")
+            resultados.extend(registros)
+
+            print(f"{ticker}: {len(dados)} registros coletados.")
+
+        except Exception as e:
+            print(f"Erro ao coletar {ticker}: {e}")
 
     return resultados
