@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timezone, timedelta
 import time
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 load_dotenv()
 
@@ -69,25 +71,30 @@ def coletar_e_enviar_para_s3():
             start_date = obter_ultima_data_ingestao_por_ticker(BUCKET_NAME, ticker)
 
             if not start_date:
-                print(f"📌 {ticker} será coletado pela primeira vez (desde 2022-01-01).")
+                print(f"{ticker} será coletado pela primeira vez (desde 2022-01-01).")
                 start_date = "2022-01-01"
 
             if start_date >= end_date_str:
                 resultados.append({ticker: "Sem novos dados"})
                 continue
 
-            print(f"⏳ Baixando {ticker} de {start_date} até {end_date_str}...")
+            print(f"Baixando {ticker} de {start_date} até {end_date_str}...")
 
             dados = yf.download(ticker, start=start_date, end=end_date_str, auto_adjust=True)
+            dados = dados.reset_index()
+            dados.rename(columns={"Date": "date"}, inplace=True)
+            dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
+            dados["ingestion_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
             if dados.empty:
                 resultados.append({ticker: "Sem dados"})
                 continue
 
-            dados["ingestion_date"] = datetime.now(timezone.utc)
 
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
+            table = pa.Table.from_pandas(dados, preserve_index=False)
             buffer = BytesIO()
-            dados.to_parquet(buffer, index=True, engine="pyarrow", coerce_timestamps="us", allow_truncated_timestamps=True)
+            pq.write_table(table, buffer, coerce_timestamps="us", use_deprecated_int96_timestamps=False)
 
             ingestion_date = datetime.now().strftime("%Y-%m-%d")
             filename = f"raw/ingestion_date={ingestion_date}/{ticker}_{datetime.now().strftime('%H-%M-%S')}.parquet"
@@ -98,13 +105,13 @@ def coletar_e_enviar_para_s3():
                 Body=buffer.getvalue()
             )
 
-            print(f"✅ {ticker} enviado com ingestion_date={ingestion_date}")
+            print(f"{ticker} enviado com ingestion_date={ingestion_date}")
             resultados.append({ticker: "Enviado"})
 
             time.sleep(1)
 
         except Exception as e:
-            print(f"❌ Erro em {ticker}: {e}")
+            print(f"Erro em {ticker}: {e}")
             resultados.append({ticker: f"Erro: {str(e)}"})
 
     return resultados
