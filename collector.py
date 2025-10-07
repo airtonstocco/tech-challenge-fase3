@@ -92,6 +92,7 @@ def coletar_e_enviar_para_s3():
             dados.rename(columns={"Date": "date"}, inplace=True)
             dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
             dados["ingestion_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            dados["ticker"] = ticker
 
             if dados.empty:
                 resultados.append({ticker: "Sem dados"})
