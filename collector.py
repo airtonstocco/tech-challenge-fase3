@@ -18,6 +18,13 @@ s3 = boto3.client(
     region_name=os.getenv("AWS_DEFAULT_REGION")
 )
 
+lambda_client = boto3.client(
+    "lambda",
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+    region_name=os.getenv("AWS_DEFAULT_REGION")
+)
+
 BUCKET_NAME = "dados-fase-3"
 
 # Lista fixa dos tickers B3
@@ -90,7 +97,6 @@ def coletar_e_enviar_para_s3():
                 resultados.append({ticker: "Sem dados"})
                 continue
 
-
             dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
             table = pa.Table.from_pandas(dados, preserve_index=False)
             buffer = BytesIO()
@@ -114,4 +120,18 @@ def coletar_e_enviar_para_s3():
             print(f"Erro em {ticker}: {e}")
             resultados.append({ticker: f"Erro: {str(e)}"})
 
+    # Após o loop de coleta de dados, invoca a função Lambda
+    invocar_lambda()
+
     return resultados
+
+def invocar_lambda():
+    try:
+        response = lambda_client.invoke(
+            FunctionName='fase-3-glue-job',  # Substitua pelo nome da sua função Lambda
+            InvocationType='Event',  # 'Event' para execução assíncrona
+            Payload='{"message": "Coleta de dados B3 finalizada."}'
+        )
+        print(f"Função Lambda invocada com sucesso: {response['StatusCode']}")
+    except Exception as e:
+        print(f"Erro ao invocar Lambda: {e}")
