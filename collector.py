@@ -87,7 +87,7 @@ def coletar_e_enviar_para_s3():
             dados["ingestion_date"] = datetime.now(timezone.utc)
 
             buffer = BytesIO()
-            dados.to_parquet(buffer, index=True)
+            dados.to_parquet(buffer, index=True, engine="pyarrow", coerce_timestamps="us", allow_truncated_timestamps=True)
 
             ingestion_date = datetime.now().strftime("%Y-%m-%d")
             filename = f"raw/ingestion_date={ingestion_date}/{ticker}_{datetime.now().strftime('%H-%M-%S')}.parquet"
