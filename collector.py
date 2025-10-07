@@ -159,6 +159,8 @@ def coletar_dados_hoje():
                 print(f"Sem dados para {ticker} hoje.")
                 continue
 
+            dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
+
             dados = dados.reset_index()
             dados.rename(columns={"Date": "date"}, inplace=True)
             dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
