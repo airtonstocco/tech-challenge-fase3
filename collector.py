@@ -89,8 +89,8 @@ def coletar_e_enviar_para_s3():
 
             dados = yf.download(ticker, start=start_date, end=end_date_str, auto_adjust=True)
             dados = dados.reset_index()
-            dados.rename(columns={"Date": "date"}, inplace=True)
-            dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
+            dados.rename(columns={"Date": "trading_date"}, inplace=True)
+            dados["trading_date"] = dados["trading_date"].dt.strftime("%Y-%m-%d")
             dados["ingestion_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             dados["ticker"] = ticker
 
@@ -152,7 +152,7 @@ def coletar_dados_hoje():
                 start=hoje_str,
                 end=hoje_str,
                 auto_adjust=True,
-                interval="1d"
+                interval="30m"
             )
 
             if dados.empty:
@@ -162,8 +162,8 @@ def coletar_dados_hoje():
             dados.columns = [col[0] if isinstance(col, tuple) else col for col in dados.columns]
 
             dados = dados.reset_index()
-            dados.rename(columns={"Date": "date"}, inplace=True)
-            dados["date"] = dados["date"].dt.strftime("%Y-%m-%d")
+            dados.rename(columns={"Date": "trading_date"}, inplace=True)
+            dados["trading_date"] = dados["trading_date"].dt.strftime("%Y-%m-%d")
             dados["ticker"] = ticker
 
             # Transforma em dicionários para retorno JSON-friendly
