@@ -311,8 +311,22 @@ def get_recomendation():
     df_sorted = metrics_df.sort_values(by=["score_predito", "ticker"], ascending=[False, True]).reset_index(drop=True)
     carteira_recomendada = df_sorted.head(5)
 
+    # Inicializa uma lista para armazenar as datas
+    datas_ultima_coleta = []
+
+    for index, row in carteira_recomendada.iterrows():
+        ticker = row["ticker"]
+        try:
+            data = obter_ultima_data_ingestao_por_ticker(BUCKET_NAME, ticker)
+            datas_ultima_coleta.append(data)
+        except Exception:
+            datas_ultima_coleta.append(None)
+
+    # Adiciona a nova coluna ao DataFrame
+    carteira_recomendada["data_ultima_coleta"] = datas_ultima_coleta
+
     print("\nAções recomendadas:")
-    print(carteira_recomendada[["ticker", "cumulative_return_period", "return_std_deviation", "drawdown", "score_predito"]])
+    print(carteira_recomendada[["data_ultima_coleta", "ticker", "cumulative_return_period", "return_std_deviation", "drawdown", "score_predito"]])
 
     # Salva no S3 com versionamento via datetime
     now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -323,9 +337,5 @@ def get_recomendation():
     buffer.seek(0)
     s3.put_object(Bucket=bucket_name, Key=file_key, Body=buffer.getvalue())
     print(f"Carteira recomendada salva no S3: {file_key}")
-
-    carteira_recomendada['data_ultima_coleta'] = carteira_recomendada['ticker'].apply(
-        lambda ticker: obter_ultima_data_ingestao_por_ticker(BUCKET_NAME, ticker)
-    )
 
     return carteira_recomendada.to_dict(orient="records")
