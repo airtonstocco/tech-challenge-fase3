@@ -9,6 +9,12 @@ import time
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytz
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import r2_score, mean_squared_error
+from xgboost import XGBRegressor
 
 load_dotenv()
 
@@ -44,7 +50,8 @@ tickers_b3 = [
     "NTCO3.SA", "PETR3.SA", "PETR4.SA", "PRIO3.SA", "RADL3.SA",
     "RAIL3.SA", "RENT3.SA", "RRRP3.SA", "SANB11.SA", "SBSP3.SA",
     "SMTO3.SA", "SUZB3.SA", "TAEE11.SA", "TIMS3.SA", "UGPA3.SA",
-    "USIM5.SA", "VALE3.SA", "VBBR3.SA", "VIIA3.SA", "VIVT3.SA", "WEGE3.SA", "YDUQ3.SA"
+    "USIM5.SA", "VALE3.SA", "VBBR3.SA", "VIIA3.SA", "VIVT3.SA",
+    "WEGE3.SA", "YDUQ3.SA", "^BVSP"
 ]
 
 def obter_ultima_data_ingestao_por_ticker(bucket_name, ticker):
@@ -124,21 +131,7 @@ def coletar_e_enviar_para_s3():
             print(f"Erro em {ticker}: {e}")
             resultados.append({ticker: f"Erro: {str(e)}"})
 
-    # Após o loop de coleta de dados, invoca a função Lambda
-    invocar_lambda()
-
     return resultados
-
-def invocar_lambda():
-    try:
-        response = lambda_client.invoke(
-            FunctionName='fase-3-glue-job',  # Substitua pelo nome da sua função Lambda
-            InvocationType='Event',  # 'Event' para execução assíncrona
-            Payload='{"message": "Coleta de dados B3 finalizada."}'
-        )
-        print(f"Função Lambda invocada com sucesso: {response['StatusCode']}")
-    except Exception as e:
-        print(f"Erro ao invocar Lambda: {e}")
 
 def coletar_dados_hoje():
     resultados = []
@@ -205,3 +198,130 @@ def coletar_dados_hoje():
             print(f"Erro ao coletar {ticker}: {e}")
 
     return resultados
+
+def get_recomendation():    
+    bucket_name = "dados-fase-3"
+    prefix = "raw/"
+    dfs = []
+
+    # Lista todos os objetos da pasta raw/
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    if "Contents" not in response:
+        print("Nenhum arquivo encontrado.")
+        return pd.DataFrame()
+
+    for obj in response["Contents"]:
+        key = obj["Key"]
+        if key.endswith(".parquet"):
+            print(f"Lendo {key}...")
+            data = s3.get_object(Bucket=bucket_name, Key=key)['Body'].read()
+            df = pq.read_table(BytesIO(data)).to_pandas()
+            dfs.append(df)
+
+    raw_data = pd.concat(dfs, ignore_index=True)
+    print("Dados brutos carregados:", raw_data.shape)
+
+    # Retorno do índice de referência
+    reference_index_data = raw_data[raw_data["ticker"] == "^BVSP"].copy()
+    reference_index_return = reference_index_data["Close"].pct_change().dropna().reset_index(drop=True)
+
+    # Métricas por ticker
+    keys = ["ticker","cumulative_return_period","return_std_deviation","volume_avg","drawdown","sharpe_ratio","correlation_index"] 
+    metrics = {key: [] for key in keys}
+
+    tickers_only = [t for t in raw_data["ticker"].unique() if t != "^BVSP"]
+
+    for ticker in tickers_only:
+        df_ticker = raw_data[raw_data["ticker"] == ticker].copy().reset_index(drop=True)
+
+        close_values = df_ticker["Close"]
+        volume = df_ticker["Volume"]
+
+        cumulative_return_period = (close_values.iloc[-1] / close_values.iloc[0]) - 1
+        daily_return = close_values.pct_change().dropna()
+        return_std_deviation = daily_return.std()
+        volume_avg = volume.mean()
+        drawdown = (close_values / close_values.cummax() - 1).min()
+        sharpe_ratio = cumulative_return_period / return_std_deviation if return_std_deviation > 0 else 0
+        correlation_index = daily_return.corr(reference_index_return)
+
+        metrics["ticker"].append(ticker)
+        metrics["cumulative_return_period"].append(cumulative_return_period)
+        metrics["return_std_deviation"].append(return_std_deviation)
+        metrics["volume_avg"].append(volume_avg)
+        metrics["drawdown"].append(drawdown)
+        metrics["sharpe_ratio"].append(sharpe_ratio)
+        metrics["correlation_index"].append(correlation_index)
+
+    # Converte para DataFrame
+    metrics_df = pd.DataFrame(metrics)
+    print("Métricas calculadas:", metrics_df.shape)
+
+    # Features e target
+    features = ["cumulative_return_period", "return_std_deviation", "drawdown", "volume_avg", "correlation_index"]
+    target = "sharpe_ratio"
+
+    X = metrics_df[features]
+    y = metrics_df[target]
+
+    # Normalização
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Treino e teste
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.35, random_state=42)
+
+    # Grid de parâmetros
+    param_grid = {
+        'n_estimators': [100, 200, 300, 400, 500],
+        'max_depth': [3, 5, 7],
+        'learning_rate': [0.01, 0.05, 0.1],
+        'subsample': [0.7, 0.8, 1.0]
+    }
+
+    # GridSearchCV
+    grid_search = GridSearchCV(
+        estimator=XGBRegressor(random_state=42),
+        param_grid=param_grid,
+        cv=5,
+        scoring='r2',
+        n_jobs=-1
+    )
+    grid_search.fit(X_train, y_train)
+    optimized_parameters = grid_search.best_params_
+    print("Parâmetros otimizados:", optimized_parameters)
+
+    # Modelo final
+    modelo = XGBRegressor(
+        **optimized_parameters,
+        colsample_bytree=0.9,
+        random_state=42
+    )
+    modelo.fit(X_train, y_train)
+
+    # Avaliação
+    y_pred = modelo.predict(X_test)
+    print(f"R²: {r2_score(y_test, y_pred):.3f}")
+    print(f"RMSE: {np.sqrt(mean_squared_error(y_test, y_pred)):.4f}")
+
+    # Score predito no DataFrame completo
+    metrics_df["score_predito"] = modelo.predict(X_scaled)
+
+    # Top 5 recomendadas
+    df_sorted = metrics_df.sort_values(by=["score_predito", "ticker"], ascending=[False, True]).reset_index(drop=True)
+    carteira_recomendada = df_sorted.head(5)
+
+    print("\nAções recomendadas:")
+    print(carteira_recomendada[["ticker", "cumulative_return_period", "return_std_deviation", "drawdown", "score_predito"]])
+
+    # Salva no S3 com versionamento via datetime
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_key = f"recommendations/recommendation_{now_str}.parquet"
+    buffer = BytesIO()
+    table = pa.Table.from_pandas(carteira_recomendada)
+    pq.write_table(table, buffer)
+    buffer.seek(0)
+    s3.put_object(Bucket=bucket_name, Key=file_key, Body=buffer.getvalue())
+    print(f"Carteira recomendada salva no S3: {file_key}")
+
+    return carteira_recomendada.to_dict(orient="records")
