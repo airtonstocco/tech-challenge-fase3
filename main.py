@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
-from collector import coletar_e_enviar_para_s3, coletar_dados_hoje, get_recomendation
+from collector import coletar_e_enviar_para_s3, coletar_dados_hoje, get_recomendacao_modelo
 
 app = FastAPI(
     title = "tech-challenge-3",
@@ -23,6 +23,6 @@ def get_hoje():
     return {"status": "ok", "quantidade_tickers": len(dados_atuais), "dados": dados_atuais} """
 
 @app.get("/get_recomendacao_modelo")
-def model():
-    acoes_recomendadas = get_recomendation()
+def get_recomendacao():
+    acoes_recomendadas = get_recomendacao_modelo()
     return {"status": "ok", "dados": acoes_recomendadas}

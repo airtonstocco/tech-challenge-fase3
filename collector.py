@@ -199,7 +199,7 @@ def coletar_dados_hoje():
 
     return resultados
 
-def get_recomendation():    
+def get_recomendacao_modelo():    
     bucket_name = "dados-fase-3"
     prefix = "raw/"
     dfs = []
@@ -338,5 +338,25 @@ def get_recomendation():
     s3.put_object(Bucket=bucket_name, Key=file_key, Body=buffer.getvalue())
     print(f"Carteira recomendada salva no S3: {file_key}")
 
-    carteira_recomendada['data_ultima_coleta'] = carteira_recomendada['data_ultima_coleta'].astype(str)
+    # Evita NaN/Inf e garante tipos nativos Python para JSON
+    carteira_recomendada = carteira_recomendada.copy()
+
+    # Corrigir possíveis NaN/Inf nas métricas
+    carteira_recomendada.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # Converter datetime para str
+    if "data_ultima_coleta" in carteira_recomendada.columns:
+        carteira_recomendada["data_ultima_coleta"] = carteira_recomendada["data_ultima_coleta"].astype(str)
+
+    # Converter números NumPy -> tipos nativos e trocar NaN por None
+    for col in carteira_recomendada.columns:
+        if pd.api.types.is_numeric_dtype(carteira_recomendada[col]):
+            # vira float nativo; NaN -> None
+            carteira_recomendada[col] = (
+                carteira_recomendada[col]
+                .astype(object)  # permite None
+                .where(carteira_recomendada[col].notna(), None)
+                .apply(lambda x: float(x) if x is not None else None)
+            )
+
     return carteira_recomendada.to_dict(orient="records")
