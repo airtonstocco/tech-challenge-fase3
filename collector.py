@@ -338,4 +338,5 @@ def get_recomendation():
     s3.put_object(Bucket=bucket_name, Key=file_key, Body=buffer.getvalue())
     print(f"Carteira recomendada salva no S3: {file_key}")
 
+    carteira_recomendada['data_ultima_coleta'] = carteira_recomendada['data_ultima_coleta'].astype(str)
     return carteira_recomendada.to_dict(orient="records")
