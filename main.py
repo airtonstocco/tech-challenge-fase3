@@ -13,7 +13,7 @@ def root():
     return RedirectResponse(url="/docs")
 
 @app.post("/post_atualiza_historico/")
-def get_historico():
+def post_historico():
     resultados = coletar_e_enviar_para_s3()
     return {"resultado": resultados}
 
