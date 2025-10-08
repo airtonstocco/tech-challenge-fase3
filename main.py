@@ -17,12 +17,12 @@ def get_historico():
     resultados = coletar_e_enviar_para_s3()
     return {"resultado": resultados}
 
-@app.get("/get_dados_hoje")
+""" @app.get("/get_dados_hoje")
 def get_hoje():
     dados_atuais = coletar_dados_hoje()
-    return {"status": "ok", "quantidade_tickers": len(dados_atuais), "dados": dados_atuais}
+    return {"status": "ok", "quantidade_tickers": len(dados_atuais), "dados": dados_atuais} """
 
-@app.get("/model")
+@app.get("/get_recomendacao_modelo")
 def model():
     acoes_recomendadas = get_recomendation()
     return {"status": "ok", "dados": acoes_recomendadas}
